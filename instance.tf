@@ -23,30 +23,59 @@ resource "aws_iam_instance_profile" "decrypt_profile" {
 resource "aws_ssm_document" "install_certificate" {
   name          = "InstallTheCertForMe"
   document_type = "Command"
-  content = <<DOC
-{
-  "schemaVersion": "2.2",
-  "description": "Install cert",
-  "mainSteps": [
-    {
-      "name" : "install",
-      "action": "aws:runShellScript",
-      "inputs": {
-        "runCommand": [ 
-          "amazon-linux-extras install -y nginx1",
-          "aws s3 cp s3://${aws_s3_bucket.cert_bucket.bucket}/${aws_s3_object.web_cert_private_key.id} /etc/nginx/conf.d/privkey.pem",
-          "aws s3 cp s3://${aws_s3_bucket.cert_bucket.bucket}/${aws_s3_object.web_certificate_pem.id} - | tee /etc/nginx/conf.d/fullchain.pem",
-          "aws s3 cp s3://${aws_s3_bucket.cert_bucket.bucket}/${aws_s3_object.web_issuer_pem.id} - | tee -a /etc/nginx/conf.d/fullchain.pem",
-          "echo \"worker_processes  1;\nevents {\n    worker_connections  1024;\n}\nhttp {\n    include       mime.types;\n    default_type  application/octet-stream;\n    sendfile        on;\n    keepalive_timeout  65;\n    server {\n        listen       80;\n        listen       443 ssl;\n        server_name  localhost;\n        ssl_certificate /etc/nginx/conf.d/fullchain.pem;\n        ssl_certificate_key /etc/nginx/conf.d/privkey.pem;\n        location / {\n            root   html;\n            index  index.html index.htm;\n        }\n\n        error_page   500 502 503 504  /50x.html;\n        location = /50x.html {\n            root   html;\n        }\n    }\n}\" | tee /etc/nginx/nginx.conf",
-          "systemctl enable --now nginx",
-          "systemctl restart nginx"
-        ]
+  document_format = "YAML"
+  content = <<EOT
+---
+schemaVersion: "2.2"
+description: "install cert"
+parameters:
+mainSteps:
+- action: "aws:runShellScript"
+  name: "certInstaller"
+  inputs:
+    runCommand:
+    - |-
+      #!/bin/bash
+      amazon-linux-extras install -y nginx1
+      aws s3 cp s3://${aws_s3_bucket.cert_bucket.bucket}/${aws_s3_object.web_cert_private_key.id} /etc/nginx/conf.d/privkey.pem
+      aws s3 cp s3://${aws_s3_bucket.cert_bucket.bucket}/${aws_s3_object.web_certificate_pem.id} - | tee /etc/nginx/conf.d/fullchain.pem
+      aws s3 cp s3://${aws_s3_bucket.cert_bucket.bucket}/${aws_s3_object.web_issuer_pem.id} - | tee -a /etc/nginx/conf.d/fullchain.pem
+      cat << EOF | tee /etc/nginx/nginx.conf
+      worker_processes  1;
+      events {
+          worker_connections  1024;
       }
-    }
-  ]
+      http {
+          include       mime.types;
+          default_type  application/octet-stream;
+          sendfile        on;
+          keepalive_timeout  65;
+          server {
+              listen       80;
+              listen       443 ssl;
+              server_name  localhost;
+              ssl_certificate /etc/nginx/conf.d/fullchain.pem;
+              ssl_certificate_key /etc/nginx/conf.d/privkey.pem;
+              location / {
+                  root   html;
+                  index  index.html index.htm;
+              }
+
+              error_page   500 502 503 504  /50x.html;
+              location = /50x.html {
+                  root   html;
+              }
+          }
+      }
+      EOF
+
+      systemctl enable --now nginx
+      systemctl restart nginx
+EOT
 }
-DOC
-}
+
+
+
 
 resource "aws_ssm_association" "cert-ssm-assoc" {
   association_name = "certifcate-ssm-assoc"
@@ -58,7 +87,7 @@ resource "aws_ssm_association" "cert-ssm-assoc" {
 }
 
 # create our web server
-resource "aws_instance" "secure_web1" {
+resource "aws_instance" "secure_web" {
     ami = data.aws_ami.nginx-demo.id
     instance_type = "t2.micro"
     iam_instance_profile = aws_iam_instance_profile.decrypt_profile.name
@@ -71,12 +100,12 @@ resource "aws_instance" "secure_web1" {
 
 # # associate an elastic IP
 resource "aws_eip" "web_eip" {
-  instance = aws_instance.secure_web1.id
+  instance = aws_instance.secure_web.id
   domain   = "vpc"
 }
 
 output "web_instance_id" {
-  value = aws_instance.secure_web1.id
+  value = aws_instance.secure_web.id
 }
 
 # create an A record
